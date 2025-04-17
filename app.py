@@ -72,8 +72,8 @@ class TextProcessor:
         """Preprocesa el texto eliminando stopwords y aplicando stemming."""
         text_lower = text.lower()
         for greeting, replacement in greetings.items():
-        if greeting in text_lower:
-            return replacement
+            if greeting in text_lower:
+                return replacement
         try:
             # Limpieza básica
             text = text.lower()
