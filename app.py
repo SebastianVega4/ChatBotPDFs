@@ -2,6 +2,7 @@ import os
 import re
 import numpy as np
 import nltk
+import torch  # Añadir esta importación
 from nltk.corpus import stopwords
 from nltk.stem import SnowballStemmer
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -17,6 +18,11 @@ import hashlib
 from typing import List, Dict, Optional
 from pathlib import Path
 
+# Descargar recursos de NLTK al inicio
+nltk.download('stopwords', quiet=True)
+nltk.download('punkt', quiet=True)
+nltk.download('punkt_tab', quiet=True)  # Añadir este recurso faltante
+
 # Configuración global
 class Config:
     MAX_CONTEXTS = 5  # Aumentado para mejor precisión
@@ -24,11 +30,12 @@ class Config:
     N_THREADS = 4
     VECTOR_CACHE = "vector_cache.pkl"
     DOCUMENT_CACHE = "doc_cache.pkl"
-    UPLOAD_FOLDER = "./uploads"
+    UPLOAD_FOLDER = os.path.abspath("./uploads")  # Ruta absoluta
     ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt'}
     HOST = "0.0.0.0"
     PORT = 5000
-    MODEL_NAME = "mrm8488/distillbert-base-spanish-wwm-cased-finetuned-spa-squad2-es"  # Modelo más ligero
+    MODEL_NAME = "bert-base-multilingual-cased" 
+    #Config.MODEL_NAME = "bert-base-multilingual-cased"  # Modelo gratuito de Hugging Face
 
 # Descargar recursos de NLTK
 nltk.download('stopwords', quiet=True)
@@ -45,18 +52,41 @@ class TextProcessor:
         self.stop_words = set(stopwords.words('spanish'))
         self.stemmer = SnowballStemmer('spanish')
         self.punctuation = re.compile(r'[^\w\s]')
+        # Asegurar que los recursos de NLTK estén disponibles
+        try:
+            nltk.data.find('tokenizers/punkt')
+        except LookupError:
+            nltk.download('punkt')
+            nltk.download('punkt_tab')
 
     def preprocess_text(self, text: str) -> str:
         """Preprocesa el texto eliminando stopwords y aplicando stemming."""
-        # Limpieza básica
-        text = text.lower()
-        text = self.punctuation.sub(' ', text)
+        # Manejo de saludos básicos
+        greetings = {
+            'hola': 'saludo',
+            'holi': 'saludo',
+            'buenos días': 'saludo',
+            'buenas tardes': 'saludo',
+            'buenas noches': 'saludo'
+        }
+        """Preprocesa el texto eliminando stopwords y aplicando stemming."""
+        text_lower = text.lower()
+        for greeting, replacement in greetings.items():
+        if greeting in text_lower:
+            return replacement
+        try:
+            # Limpieza básica
+            text = text.lower()
+            text = self.punctuation.sub(' ', text)
         
-        # Tokenización y stemming
-        tokens = nltk.word_tokenize(text)
-        tokens = [self.stemmer.stem(token) for token in tokens if token not in self.stop_words and len(token) > 2]
+            # Tokenización y stemming
+            tokens = nltk.word_tokenize(text)
+            tokens = [self.stemmer.stem(token) for token in tokens if token not in self.stop_words and len(token) > 2]
         
-        return ' '.join(tokens)
+            return ' '.join(tokens)
+        except Exception as e:
+            print(f"Error en preprocesamiento: {str(e)}")
+            return text  # Devolver texto sin procesar si hay error
 
     def split_text(self, text: str, max_length: int = Config.MAX_FRAGMENT_SIZE) -> List[str]:
         """Divide el texto en fragmentos manteniendo párrafos intactos cuando es posible."""
@@ -91,74 +121,95 @@ class DocumentHandler:
 
     def _file_hash(self, file_path: str) -> str:
         """Calcula el hash de un archivo para detectar cambios."""
-        with open(file_path, 'rb') as f:
-            return hashlib.md5(f.read()).hexdigest()
+        try:
+            with open(file_path, 'rb') as f:
+                return hashlib.md5(f.read()).hexdigest()
+        except Exception as e:
+            print(f"Error calculando hash: {str(e)}")
+            return ""
 
     def extract_text(self, file_path: str) -> str:
-        """Extrae texto de diferentes tipos de archivos."""
-        ext = os.path.splitext(file_path)[1].lower()
-        
-        if ext == '.pdf':
-            with pdfplumber.open(file_path) as pdf:
-                return '\n'.join(page.extract_text() or '' for page in pdf.pages)
-        elif ext == '.docx':
-            doc = Document(file_path)
-            return '\n'.join(para.text for para in doc.paragraphs if para.text.strip())
-        elif ext == '.txt':
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return f.read()
-        else:
-            raise ValueError(f"Formato de archivo no soportado: {ext}")
+        """Extrae texto de diferentes tipos de archivos con manejo de errores."""
+        try:
+            ext = os.path.splitext(file_path)[1].lower()
+            
+            if ext == '.pdf':
+                text = ''
+                with pdfplumber.open(file_path) as pdf:
+                    for page in pdf.pages:
+                        try:
+                            page_text = page.extract_text() or ''
+                            text += page_text + '\n'
+                        except Exception as e:
+                            print(f"Error en página PDF: {str(e)}")
+                            continue
+                return text.strip()
+            
+            elif ext == '.docx':
+                doc = Document(file_path)
+                return '\n'.join(para.text for para in doc.paragraphs if para.text.strip())
+            
+            elif ext == '.txt':
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+            
+            else:
+                raise ValueError(f"Formato no soportado: {ext}")
+                
+        except Exception as e:
+            print(f"Error extrayendo texto de {file_path}: {str(e)}")
+            return ""
 
     def load_documents(self, directory: str = Config.UPLOAD_FOLDER) -> bool:
-        """Carga y procesa documentos del directorio especificado."""
+        """Carga y procesa documentos con mejor manejo de errores."""
         try:
-            # Verificar si hay documentos nuevos o modificados
-            current_hashes = {}
-            for filename in os.listdir(directory):
-                if any(filename.lower().endswith(ext) for ext in Config.ALLOWED_EXTENSIONS):
-                    file_path = os.path.join(directory, filename)
-                    current_hashes[filename] = self._file_hash(file_path)
-
-            # Si no hay cambios, cargar de caché
-            if (os.path.exists(Config.DOCUMENT_CACHE) and 
-                os.path.exists(Config.VECTOR_CACHE) and
-                current_hashes == self.document_hashes):
-                with open(Config.DOCUMENT_CACHE, 'rb') as f:
-                    self.documents = pickle.load(f)
-                with open(Config.VECTOR_CACHE, 'rb') as f:
-                    self.vectorizer = pickle.load(f)
-                self.fragments = [f for doc in self.documents for f in doc['fragments']]
-                return True
-
-            # Procesar documentos
-            self.documents = []
-            for filename in os.listdir(directory):
-                if any(filename.lower().endswith(ext) for ext in Config.ALLOWED_EXTENSIONS):
-                    file_path = os.path.join(directory, filename)
-                    try:
-                        text = self.extract_text(file_path)
-                        if text.strip():
-                            preprocessed = self.text_processor.preprocess_text(text)
-                            fragments = self.text_processor.split_text(text)
-                            self.documents.append({
-                                'file_name': filename,
-                                'content': text,
-                                'preprocessed': preprocessed,
-                                'fragments': fragments
-                            })
-                    except Exception as e:
-                        print(f"Error procesando {filename}: {str(e)}")
-
-            if not self.documents:
-                return False
-
-            # Actualizar hashes y guardar en caché
-            self.document_hashes = current_hashes
-            self.fragments = [f for doc in self.documents for f in doc['fragments']]
+            # Crear directorio si no existe
+            os.makedirs(directory, exist_ok=True)
             
+            # Obtener archivos válidos
+            valid_files = [
+                f for f in os.listdir(directory) 
+                if any(f.lower().endswith(ext) for ext in Config.ALLOWED_EXTENSIONS)
+            ]
+            
+            if not valid_files:
+                print("No hay archivos válidos en el directorio")
+                return False
+                
+            # Procesar cada archivo
+            self.documents = []
+            for filename in valid_files:
+                file_path = os.path.join(directory, filename)
+                try:
+                    text = self.extract_text(file_path)
+                    if text.strip():
+                        preprocessed = self.text_processor.preprocess_text(text)
+                        fragments = self.text_processor.split_text(text)
+                        
+                        self.documents.append({
+                            'file_name': filename,
+                            'content': text,
+                            'preprocessed': preprocessed,
+                            'fragments': fragments
+                        })
+                        print(f"Documento procesado: {filename}")
+                except Exception as e:
+                    print(f"Error procesando {filename}: {str(e)}")
+                    continue
+            
+            if not self.documents:
+                print("No se pudieron procesar documentos válidos")
+                return False
+                
             # Entrenar vectorizador
             self.vectorizer.fit([doc['preprocessed'] for doc in self.documents])
+            self.fragments = [f for doc in self.documents for f in doc['fragments']]
+            
+            # Actualizar hashes
+            self.document_hashes = {
+                doc['file_name']: self._file_hash(os.path.join(directory, doc['file_name']))
+                for doc in self.documents
+            }
             
             # Guardar en caché
             with open(Config.DOCUMENT_CACHE, 'wb') as f:
@@ -166,9 +217,11 @@ class DocumentHandler:
             with open(Config.VECTOR_CACHE, 'wb') as f:
                 pickle.dump(self.vectorizer, f)
                 
+            print(f"Documentos cargados: {len(self.documents)}")
             return True
+            
         except Exception as e:
-            print(f"Error al cargar documentos: {str(e)}")
+            print(f"Error crítico en load_documents: {str(e)}")
             return False
 
     def find_relevant_contexts(self, question: str) -> List[str]:
@@ -207,99 +260,132 @@ class QAEngine:
         self.load_model()
         
     def load_model(self):
-        """Carga el modelo de pregunta-respuesta."""
+        """Carga el modelo de pregunta-respuesta con manejo de errores mejorado."""
         try:
+            # Primero verifica la conexión a Hugging Face
+            from huggingface_hub import HfApi
+            api = HfApi()
+            try:
+                api.model_info(Config.MODEL_NAME)
+            except Exception as e:
+                print(f"Modelo no accesible: {str(e)}")
+                # Usar un modelo local alternativo
+                Config.MODEL_NAME = "bert-base-multilingual-cased"
+            
+            # Cargar el pipeline
             self.qa_pipeline = pipeline(
                 "question-answering",
                 model=Config.MODEL_NAME,
                 tokenizer=Config.MODEL_NAME,
                 device=0 if torch.cuda.is_available() else -1
             )
+            print(f"Modelo {Config.MODEL_NAME} cargado exitosamente")
             return True
         except Exception as e:
-            print(f"Error al cargar el modelo: {str(e)}")
+            print(f"Error crítico al cargar el modelo: {str(e)}")
+            # Configurar un pipeline básico como respaldo
+            self.qa_pipeline = lambda question, context: {
+                'answer': 'No se pudo cargar el modelo de IA',
+                'score': 0.0
+            }
             return False
-
+    
     def answer_question(self, question: str) -> Dict[str, str]:
-        """Genera una respuesta a partir de los documentos cargados."""
-        if not self.document_handler.documents:
-            return {
-                "answer": "No hay documentos cargados. Por favor, sube archivos primero.",
-                "score": 0.0,
-                "confidence": "N/A",
-                "sources": []
-            }
-
-        contexts = self.document_handler.find_relevant_contexts(question)
-        if not contexts:
-            return {
-                "answer": "No se encontraron contextos relevantes para tu pregunta.",
-                "score": 0.0,
-                "confidence": "N/A",
-                "sources": []
-            }
-
-        def process_context(context: str) -> Dict:
-            try:
-                result = self.qa_pipeline(question=question, context=context, max_seq_len=512)
-                return {
-                    "answer": result['answer'],
-                    "score": float(result['score']),
-                    "context": context
-                }
-            except Exception as e:
-                print(f"Error procesando contexto: {str(e)}")
-                return {
-                    "answer": "",
-                    "score": 0.0,
-                    "context": context
-                }
-
-        with ThreadPoolExecutor(max_workers=Config.N_THREADS) as executor:
-            answers = list(executor.map(process_context, contexts))
-        
-        # Filtrar respuestas vacías y seleccionar la mejor
-        valid_answers = [a for a in answers if a['answer'].strip()]
-        if not valid_answers:
-            return {
-                "answer": "No pude encontrar una respuesta en los documentos.",
-                "score": 0.0,
-                "confidence": "N/A",
-                "sources": []
-            }
-
-        best_answer = max(valid_answers, key=lambda x: x['score'])
-        
-        # Formatear respuesta
-        answer_text = best_answer['answer'].strip()
-        if not answer_text.endswith(('.', '!', '?')):
-            answer_text += '.'
-        
-        # Obtener fuentes (nombres de documentos)
-        sources = []
-        for doc in self.document_handler.documents:
-            if best_answer['context'] in doc['fragments']:
-                sources.append(doc['file_name'])
-                if len(sources) >= 2:  # Limitar a 2 fuentes
-                    break
-        
-        return {
-            "answer": answer_text,
-            "score": best_answer['score'],
-            "confidence": self._get_confidence_level(best_answer['score']),
-            "sources": sources
+        greetings_responses = {
+        'saludo': "¡Hola! Soy un asistente universitario. ¿En qué puedo ayudarte hoy?",
+        'cómo estás': "Estoy aquí para ayudarte con información académica. ¿Qué necesitas saber?",
+        'quién eres': "Soy un chatbot diseñado para responder preguntas sobre documentos universitarios."
         }
 
-    def _get_confidence_level(self, score: float) -> str:
-        """Devuelve un nivel de confianza legible para el usuario."""
-        if score > 0.75:
-            return "Alta confianza"
-        elif score > 0.5:
-            return "Media confianza"
-        elif score > 0.3:
-            return "Baja confianza"
-        else:
-            return "Muy baja confianza"
+        preprocessed = self.text_processor.preprocess_text(question)
+        if preprocessed in greetings_responses:
+            return {
+                "answer": greetings_responses[preprocessed],
+                "score": 0.9,
+                "confidence": "Alta confianza",
+                "sources": []
+            }
+
+        """Genera una respuesta con mejor manejo de errores."""
+        if not self.document_handler.documents:
+            return {
+                "answer": "No hay documentos cargados para analizar.",
+                "score": 0.0,
+                "confidence": "N/A",
+                "sources": []
+            }
+
+        try:
+            # Obtener contextos relevante
+            contexts = self.document_handler.find_relevant_contexts(question)
+            if not contexts:
+                return {
+                    "answer": "No encontré información relevante en los documentos cargados.",
+                    "score": 0.0,
+                    "confidence": "N/A",
+                    "sources": []
+                }
+
+         # Procesar cada contexto para obtener respuestas
+            answers = []
+            for context in contexts:
+                try:
+                    result = self.qa_pipeline(question=question, context=context)
+                    if result['score'] > 0.01:  # Filtro mínimo de confianza
+                         answers.append({
+                            "answer": result['answer'],
+                            "score": float(result['score']),
+                            "context": context
+                        })
+                except Exception as e:
+                    print(f"Error procesando contexto: {str(e)}")
+                    continue
+
+            if not answers:
+                return {
+                    "answer": "No pude encontrar una respuesta clara en los documentos cargados.",
+                    "score": 0.0,
+                    "confidence": "N/A",
+                    "sources": []
+                }
+
+            # Seleccionar la mejor respuesta
+            best_answer = max(answers, key=lambda x: x['score'])
+
+            # Obtener fuentes/documentos de origen
+            sources = []
+            for doc in self.document_handler.documents:
+                if best_answer['context'] in doc['fragments']:
+                    sources.append(doc['file_name'])
+                    if len(sources) >= 2:  # Limitar a 2 fuentes máximo
+                        break
+
+            return {
+                "answer": best_answer['answer'].strip(),
+                "score": best_answer['score'],
+                "confidence": self._get_confidence_level(best_answer['score']),
+                "sources": sources
+            }
+
+        except Exception as e:
+            print(f"Error en answer_question: {str(e)}")
+            return {
+                "answer": "Ocurrió un error al procesar tu pregunta. Por favor intenta de nuevo.",
+                "score": 0.0,
+                "confidence": "N/A",
+                "sources": []
+            }
+
+        def _get_confidence_level(self, score: float) -> str:
+            """Devuelve un nivel de confianza legible para el usuario."""
+            if score > 0.75:
+                return "Alta confianza"
+            elif score > 0.5:
+                return "Media confianza"
+            elif score > 0.3:
+                return "Baja confianza"
+            else:
+                return "Muy baja confianza"
 
 # Inicializar el motor QA
 qa_engine = QAEngine()
@@ -346,30 +432,50 @@ def chat():
     try:
         data = request.get_json()
         if not data or "pregunta" not in data:
-            return jsonify({"error": "Se requiere un campo 'pregunta'"}), 400
+            return jsonify({
+                "error": "Se requiere un campo 'pregunta'",
+                "answer": "",
+                "score": 0.0,
+                "confidence": "N/A",
+                "sources": []
+            }), 400
 
         question = data["pregunta"].strip()
         if not question:
-            return jsonify({"error": "La pregunta no puede estar vacía"}), 400
+            return jsonify({
+                "error": "La pregunta no puede estar vacía",
+                "answer": "",
+                "score": 0.0,
+                "confidence": "N/A",
+                "sources": []
+            }), 400
 
         response = qa_engine.answer_question(question)
+        
+        # Asegurar que la respuesta tenga todos los campos necesarios
+        required_fields = ["answer", "score", "confidence", "sources"]
+        for field in required_fields:
+            if field not in response:
+                response[field] = "" if field == "answer" else 0.0 if field == "score" else "N/A" if field == "confidence" else []
+        
         return jsonify(response), 200
 
     except Exception as e:
-        print(f"Error: {str(e)}")
+        print(f"Error en /chat: {str(e)}")
         return jsonify({
-            "error": f"Error procesando solicitud: {str(e)}"
+            "error": f"Error procesando solicitud: {str(e)}",
+            "answer": "Error interno del servidor",
+            "score": 0.0,
+            "confidence": "N/A",
+            "sources": []
         }), 500
 
 if __name__ == "__main__":
-    import torch
+    # Asegurar que el directorio uploads existe
+    os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
     
     # Cargar documentos al iniciar
     if not qa_engine.document_handler.load_documents():
         print("Advertencia: No se encontraron documentos para cargar")
     
-    app.run(
-        host=Config.HOST, 
-        port=Config.PORT, 
-        debug=True
-    )
+    app.run(host=Config.HOST, port=Config.PORT, debug=True)

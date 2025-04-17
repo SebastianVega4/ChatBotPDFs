@@ -23,11 +23,24 @@ class ChatUI {
 
   async loadDocumentList() {
     try {
+      this.showStatus("Cargando lista de documentos...", "info");
       const response = await fetch("/documents");
       if (!response.ok) throw new Error("Error al cargar documentos");
 
       const data = await response.json();
       this.updateDocumentList(data.documents);
+
+      if (data.documents.length === 0) {
+        this.showStatus(
+          "No hay documentos cargados. Sube archivos PDF, DOCX o TXT.",
+          "warning"
+        );
+      } else {
+        this.showStatus(
+          `Lista de documentos actualizada (${data.documents.length} documentos)`,
+          "success"
+        );
+      }
     } catch (error) {
       console.error("Error:", error);
       this.showStatus("Error al cargar la lista de documentos", "error");
@@ -93,35 +106,45 @@ class ChatUI {
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || `Error ${response.status}`);
+        throw new Error(`Error HTTP: ${response.status}`);
       }
 
       const data = await response.json();
 
-      if (data.error) {
-        this.addMessage("bot", data.error, "error");
-      } else {
-        const confidenceClass = this.getConfidenceClass(data.confidence);
-        let sourcesText = "";
+      // Manejo robusto de la respuesta
+      const answer = data.answer || "No se encontró respuesta";
+      const score = data.score || 0;
+      const confidence = data.confidence || "N/A";
+      const sources = data.sources || [];
+      const error = data.error || null;
 
-        if (data.sources && data.sources.length > 0) {
-          sourcesText = `<div class="sources">Fuente: ${data.sources.join(
-            ", "
-          )}</div>`;
-        }
-
-        this.addMessage(
-          "bot",
-          data.answer,
-          confidenceClass,
-          `Confianza: ${data.confidence} (${(data.score * 100).toFixed(1)}%)`,
-          sourcesText
-        );
+      if (error) {
+        this.showStatus(error, "error");
       }
+
+      const confidenceClass = this.getConfidenceClass(confidence);
+      let sourcesText = "";
+
+      if (sources.length > 0) {
+        sourcesText = `<div class="sources">Fuente: ${sources.join(
+          ", "
+        )}</div>`;
+      }
+
+      this.addMessage(
+        "bot",
+        answer,
+        confidenceClass,
+        `Confianza: ${confidence} (${(score * 100).toFixed(1)}%)`,
+        sourcesText
+      );
     } catch (error) {
       console.error("Error:", error);
-      this.addMessage("bot", `Error: ${error.message}`, "error");
+      this.addMessage(
+        "bot",
+        "Error al obtener respuesta del servidor",
+        "error"
+      );
     } finally {
       this.showStatus("", "info");
       this.sendButton.disabled = false;

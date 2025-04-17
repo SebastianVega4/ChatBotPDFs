@@ -1,4 +1,19 @@
-python -m spacy download es_core_news_sm
+# Primero instala torch según tu hardware (elige una)
+
+# Para CPU:
+pip install torch==2.1.2 --index-url https://download.pytorch.org/whl/cpu
+
+# Para CUDA 11.8:
+pip install torch==2.1.2 --index-url https://download.pytorch.org/whl/cu118
+
+# Luego las demás dependencias
+pip install -r requirements.txt
+
+# Descarga recursos NLTK
+python -c "import nltk; nltk.download('punkt'); nltk.download('stopwords'); nltk.download('punkt_tab')"
+
+
+
 
 
 // por si no sirve todo el mpn instal -r requirements.txt
