@@ -1,10 +1,5 @@
 🎓 ChatBotPDFs - Asistente Académico Inteligente
 
-[GitHub Stars](https://img.shields.io/github/stars/SebastianVega4/ChatBotPDFs?style=for-the-badge)
-[Last Commit](https://img.shields.io/github/last-commit/SebastianVega4/ChatBotPDFs?style=for-the-badge)
-[Languages](https://img.shields.io/github/languages/top/SebastianVega4/ChatBotPDFs?style=for-the-badge)
-[License](https://img.shields.io/badge/License-GPL%203.0-blue?style=for-the-badge)
-
 ChatBotPDFs es un proyecto personal que estoy desarrollando lentamente para ampliar mis conocimientos en PLN y aprendizaje automático. Es una plataforma web que, sin pretender reemplazar al bibliotecario, facilita la búsqueda de contenidos académicos mediante consulta directa sobre documentos en formato PDF, Word o texto plano. 
 
 Aún faltan mejoras al chat bot y espero en el transcurso del tiempo dedicarle más para que avance el proyecto y mejore.
@@ -100,14 +95,14 @@ Almacenamiento: Pickle
 
 ---
 
-👨‍💻 Autor y Contacto
 
-Desarrollado por Johan Sebastián Vega Ruiz, estudiante de Ingeniería de Sistemas en la UPTC, Sogamoso.
+## 👨‍🎓 Autor
 
-Este es un proyecto personal con fines de aprendizaje que iré mejorando con el tiempo.
+Desarrollado por **Sebastián Vega**  
+📧 *Sebastian.vegar2015@gmail.com*  
+🔗 [LinkedIn - Johan Sebastián Vega Ruiz](https://www.linkedin.com/in/johan-sebastian-vega-ruiz-b1292011b/)
 
-Contacto:
-sebastian.vegar2015@gmail.com
-LinkedIn: [tu perfil]
+---
+📍 Duitama, Boyacá 📍
 
-© 2025 - Proyecto personal desarrollado en la UPTC
+© 2025 — Sebastian Vega
