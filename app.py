@@ -369,26 +369,30 @@ def send_static(path):
 
 @app.route("/upload", methods=["POST"])
 def upload_file():
-    if 'file' not in request.files:
-        return jsonify({"error": "No se proporcionó ningún archivo"}), 400
+    if 'files' not in request.files:
+        return jsonify({"error": "No se proporcionaron archivos"}), 400
     
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "Nombre de archivo vacío"}), 400
+    files = request.files.getlist('files')
+    if not files or all(file.filename == '' for file in files):
+        return jsonify({"error": "Nombres de archivo vacíos"}), 400
     
-    if file and any(file.filename.lower().endswith(ext) for ext in Config.ALLOWED_EXTENSIONS):
-        filename = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
-        file.save(filename)
-        
-        # Recargar documentos
-        success = qa_engine.document_handler.load_documents()
-        return jsonify({
-            "message": "Archivo subido correctamente",
-            "reloaded": success,
-            "documents": [doc['file_name'] for doc in qa_engine.document_handler.documents]
-        }), 200
+    uploaded_files = []
+    for file in files:
+        if file and any(file.filename.lower().endswith(ext) for ext in Config.ALLOWED_EXTENSIONS):
+            filename = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
+            file.save(filename)
+            uploaded_files.append(file.filename)
     
-    return jsonify({"error": "Tipo de archivo no permitido"}), 400
+    if not uploaded_files:
+        return jsonify({"error": "No se subieron archivos válidos"}), 400
+    
+    # Recargar documentos
+    success = qa_engine.document_handler.load_documents()
+    return jsonify({
+        "message": f"Archivos subidos correctamente: {', '.join(uploaded_files)}",
+        "reloaded": success,
+        "documents": [doc['file_name'] for doc in qa_engine.document_handler.documents]
+    }), 200
 
 @app.route("/documents", methods=["GET"])
 def list_documents():

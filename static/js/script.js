@@ -7,6 +7,9 @@ class ChatUI {
     this.fileInput = document.getElementById("fileInput");
     this.uploadButton = document.getElementById("uploadButton");
     this.documentsList = document.getElementById("documentsList");
+    this.themeToggle = document.getElementById("themeToggle");
+    this.currentTheme = localStorage.getItem("theme") || "light";
+    this.applyTheme();
 
     this.initEventListeners();
     this.loadDocumentList();
@@ -18,9 +21,29 @@ class ChatUI {
       if (e.key === "Enter") this.sendQuestion();
     });
 
+    this.themeToggle.addEventListener("click", () => this.toggleTheme());
     this.uploadButton.addEventListener("click", () => this.uploadFile());
   }
 
+  toggleTheme() {
+    this.currentTheme = this.currentTheme === "light" ? "dark" : "light";
+    localStorage.setItem("theme", this.currentTheme);
+    this.applyTheme();
+    this.updateThemeIcon();
+  }
+
+  applyTheme() {
+    document.documentElement.setAttribute("data-theme", this.currentTheme);
+  }
+
+  updateThemeIcon() {
+    const icon = this.themeToggle.querySelector("span");
+    if (this.currentTheme === "dark") {
+      icon.textContent = "light_mode";
+    } else {
+      icon.textContent = "dark_mode";
+    }
+  }
   async loadDocumentList() {
     try {
       this.showStatus("Cargando lista de documentos...", "info");
@@ -53,20 +76,23 @@ class ChatUI {
       : "<li>No hay documentos cargados</li>";
   }
 
+  // En la clase ChatUI, modifica el método uploadFile
   async uploadFile() {
-    const file = this.fileInput.files[0];
-    if (!file) {
-      this.showStatus("Selecciona un archivo primero", "warning");
+    const files = this.fileInput.files;
+    if (!files || files.length === 0) {
+      this.showStatus("Selecciona al menos un archivo primero", "warning");
       return;
     }
 
-    const formData = new FormData();
-    formData.append("file", file);
-
-    this.showStatus("Subiendo archivo...", "info");
+    this.showStatus("Subiendo archivo(s)...", "info");
     this.uploadButton.disabled = true;
 
     try {
+      const formData = new FormData();
+      for (let i = 0; i < files.length; i++) {
+        formData.append("files", files[i]); // Nota: 'files' en plural para múltiples archivos
+      }
+
       const response = await fetch("/upload", {
         method: "POST",
         body: formData,
@@ -74,19 +100,40 @@ class ChatUI {
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error || "Error al subir archivo");
+        throw new Error(error.error || "Error al subir archivo(s)");
       }
 
       const data = await response.json();
       this.showStatus(data.message, "success");
       this.updateDocumentList(data.documents);
+
+      // Mostrar notificación visual de éxito
+      this.showSnackbar(
+        `Archivo(s) subido(s) correctamente: ${files.length}`,
+        "success"
+      );
     } catch (error) {
       console.error("Error:", error);
       this.showStatus(error.message, "error");
+      this.showSnackbar(error.message, "error");
     } finally {
       this.uploadButton.disabled = false;
       this.fileInput.value = "";
+      // Forzar recarga de la lista de documentos
+      this.loadDocumentList();
     }
+  }
+
+  // Añade este método para mostrar notificaciones tipo snackbar
+  showSnackbar(message, type = "info") {
+    const snackbar = document.getElementById("statusInfo");
+    snackbar.textContent = message;
+    snackbar.className = `status-snackbar ${type}`;
+    snackbar.style.display = "flex";
+
+    setTimeout(() => {
+      snackbar.style.display = "none";
+    }, 5000);
   }
 
   async sendQuestion() {
