@@ -1,3 +1,6 @@
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 import os
 import re
 import numpy as np
@@ -34,8 +37,11 @@ class Config:
     ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt'}
     HOST = "0.0.0.0"
     PORT = 5000
+    EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"  # Modelo pequeño y eficiente
+    GENERATION_MODEL = "facebook/bart-large-cnn"  # Para resumir/generar respuestas
     MODEL_NAME = "bert-base-multilingual-cased" 
-    #Config.MODEL_NAME = "bert-base-multilingual-cased"  # Modelo gratuito de Hugging Face
+    #SIMILARITY_THRESHOLD = 0.6  # Umbral para considerar una coincidencia relevante
+    SIMILARITY_THRESHOLD = 0.4  # Reducir el umbral para mayor flexibilidad
 
 # Descargar recursos de NLTK
 nltk.download('stopwords', quiet=True)
@@ -114,11 +120,11 @@ class TextProcessor:
 class DocumentHandler:
     def __init__(self):
         self.text_processor = TextProcessor()
-        self.vectorizer = TfidfVectorizer(max_features=10000, max_df=0.85)
+        self.embedding_model = SentenceTransformer(Config.EMBEDDING_MODEL)
         self.documents = []
-        self.fragments = []
-        self.document_hashes = set()
-
+        self.document_embeddings = None
+        self.document_texts = []
+        
     def _file_hash(self, file_path: str) -> str:
         """Calcula el hash de un archivo para detectar cambios."""
         try:
@@ -163,17 +169,27 @@ class DocumentHandler:
     def load_documents(self, directory: str = Config.UPLOAD_FOLDER) -> bool:
         """Carga y procesa documentos con mejor manejo de errores."""
         try:
-            # Crear directorio si no existe
-            os.makedirs(directory, exist_ok=True)
+            print(f"\nIntentando cargar documentos desde: {directory}")
             
-            # Obtener archivos válidos
+            # Verificar si el directorio existe
+            if not os.path.exists(directory):
+                print(f"¡Error! El directorio {directory} no existe")
+                return False
+                
+            # Listar contenido del directorio
+            print("Contenido del directorio:")
+            for f in os.listdir(directory):
+                print(f" - {f}")
+            
+            # Filtrar archivos válidos
             valid_files = [
                 f for f in os.listdir(directory) 
                 if any(f.lower().endswith(ext) for ext in Config.ALLOWED_EXTENSIONS)
             ]
+            print(f"\nArchivos válidos encontrados: {valid_files}")
             
             if not valid_files:
-                print("No hay archivos válidos en el directorio")
+                print("No hay archivos con extensiones válidas (.pdf, .docx, .txt)")
                 return False
                 
             # Procesar cada archivo
@@ -183,13 +199,11 @@ class DocumentHandler:
                 try:
                     text = self.extract_text(file_path)
                     if text.strip():
-                        preprocessed = self.text_processor.preprocess_text(text)
                         fragments = self.text_processor.split_text(text)
                         
                         self.documents.append({
                             'file_name': filename,
                             'content': text,
-                            'preprocessed': preprocessed,
                             'fragments': fragments
                         })
                         print(f"Documento procesado: {filename}")
@@ -201,102 +215,93 @@ class DocumentHandler:
                 print("No se pudieron procesar documentos válidos")
                 return False
                 
-            # Entrenar vectorizador
-            self.vectorizer.fit([doc['preprocessed'] for doc in self.documents])
-            self.fragments = [f for doc in self.documents for f in doc['fragments']]
+            # Generar embeddings para todos los fragmentos
+            all_fragments = [f for doc in self.documents for f in doc['fragments']]
+            if all_fragments:
+                print("Generando embeddings para los fragmentos...")
+                self.document_embeddings = self.embedding_model.encode(all_fragments)
+                self.document_texts = all_fragments
+                print("Embeddings generados exitosamente")
             
-            # Actualizar hashes
-            self.document_hashes = {
-                doc['file_name']: self._file_hash(os.path.join(directory, doc['file_name']))
-                for doc in self.documents
-            }
-            
-            # Guardar en caché
-            with open(Config.DOCUMENT_CACHE, 'wb') as f:
-                pickle.dump(self.documents, f)
-            with open(Config.VECTOR_CACHE, 'wb') as f:
-                pickle.dump(self.vectorizer, f)
-                
             print(f"Documentos cargados: {len(self.documents)}")
             return True
             
         except Exception as e:
             print(f"Error crítico en load_documents: {str(e)}")
             return False
-
-    def find_relevant_contexts(self, question: str) -> List[str]:
-        """Encuentra los contextos más relevantes para una pregunta."""
-        if not self.documents:
-            return []
-
-        preprocessed_question = self.text_processor.preprocess_text(question)
-        question_vector = self.vectorizer.transform([preprocessed_question]).toarray()
-        
-        doc_vectors = self.vectorizer.transform(
-            [doc['preprocessed'] for doc in self.documents]
-        ).toarray()
-        
-        similarities = cosine_similarity(question_vector, doc_vectors)[0]
-        relevant_indices = np.argsort(similarities)[::-1][:Config.MAX_CONTEXTS]
-        
-        # Seleccionar los fragmentos más relevantes de los documentos más relevantes
-        contexts = []
-        for idx in relevant_indices:
-            doc = self.documents[idx]
-            fragment_vectors = self.vectorizer.transform(
-                [self.text_processor.preprocess_text(f) for f in doc['fragments']]
-            ).toarray()
             
-            frag_similarities = cosine_similarity(question_vector, fragment_vectors)[0]
-            best_frag_idx = np.argmax(frag_similarities)
-            contexts.append(doc['fragments'][best_frag_idx])
+    def find_relevant_contexts(self, question: str, top_k: int = 3) -> List[Dict]:
+        """Encuentra los contextos más relevantes con sus puntuaciones de similitud."""
+        if not self.document_texts or self.document_embeddings is None:
+            return []
+            
+        # Embedding de la pregunta
+        question_embedding = self.embedding_model.encode([question])
         
-        return contexts
+        # Calcular similitudes
+        similarities = cosine_similarity(
+            question_embedding,
+            self.document_embeddings
+        )[0]
+        
+        # Obtener los índices de los top_k más relevantes
+        top_indices = np.argsort(similarities)[-top_k:][::-1]
+        
+        # Filtrar por umbral de similitud
+        results = []
+        for idx in top_indices:
+            if similarities[idx] >= Config.SIMILARITY_THRESHOLD:
+                results.append({
+                    "text": self.document_texts[idx],
+                    "score": float(similarities[idx]),
+                    "source": self._find_document_source(self.document_texts[idx])
+                })
+        
+        return results
+        
+    def _find_document_source(self, fragment: str) -> str:
+        """Encuentra el documento de origen para un fragmento de texto."""
+        for doc in self.documents:
+            if fragment in doc['fragments']:
+                return doc['file_name']
+        return "Desconocido"
+
 
 class QAEngine:
     def __init__(self):
-        self.qa_pipeline = None
         self.document_handler = DocumentHandler()
-        self.load_model()
+        self.text_processor = TextProcessor()
         
-    def load_model(self):
-        """Carga el modelo de pregunta-respuesta con manejo de errores mejorado."""
         try:
-            # Primero verifica la conexión a Hugging Face
-            from huggingface_hub import HfApi
-            api = HfApi()
-            try:
-                api.model_info(Config.MODEL_NAME)
-            except Exception as e:
-                print(f"Modelo no accesible: {str(e)}")
-                # Usar un modelo local alternativo
-                Config.MODEL_NAME = "bert-base-multilingual-cased"
-            
-            # Cargar el pipeline
-            self.qa_pipeline = pipeline(
-                "question-answering",
-                model=Config.MODEL_NAME,
-                tokenizer=Config.MODEL_NAME,
+            # Cargar modelo de generación
+            self.generation_pipe = pipeline(
+                "text2text-generation", 
+                model=Config.GENERATION_MODEL,
                 device=0 if torch.cuda.is_available() else -1
             )
-            print(f"Modelo {Config.MODEL_NAME} cargado exitosamente")
-            return True
         except Exception as e:
-            print(f"Error crítico al cargar el modelo: {str(e)}")
-            # Configurar un pipeline básico como respaldo
-            self.qa_pipeline = lambda question, context: {
-                'answer': 'No se pudo cargar el modelo de IA',
-                'score': 0.0
-            }
-            return False
+            print(f"Error loading generation model: {str(e)}")
+            self.generation_pipe = None
+    
+    def _get_confidence_level(self, score: float) -> str:
+        """Devuelve un nivel de confianza legible para el usuario."""
+        if score > 0.75:
+            return "Alta confianza"
+        elif score > 0.5:
+            return "Media confianza"
+        elif score > 0.3:
+            return "Baja confianza"
+        else:
+            return "Muy baja confianza"
     
     def answer_question(self, question: str) -> Dict[str, str]:
+        # Manejar saludos primero
         greetings_responses = {
-        'saludo': "¡Hola! Soy un asistente universitario. ¿En qué puedo ayudarte hoy?",
-        'cómo estás': "Estoy aquí para ayudarte con información académica. ¿Qué necesitas saber?",
-        'quién eres': "Soy un chatbot diseñado para responder preguntas sobre documentos universitarios."
+            'saludo': "¡Hola! Soy un asistente universitario. ¿En qué puedo ayudarte hoy?",
+            'cómo estás': "Estoy aquí para ayudarte con información académica. ¿Qué necesitas saber?",
+            'quién eres': "Soy un chatbot diseñado para responder preguntas sobre documentos universitarios."
         }
-
+        
         preprocessed = self.text_processor.preprocess_text(question)
         if preprocessed in greetings_responses:
             return {
@@ -305,88 +310,52 @@ class QAEngine:
                 "confidence": "Alta confianza",
                 "sources": []
             }
-
-        """Genera una respuesta con mejor manejo de errores."""
-        if not self.document_handler.documents:
+        
+        # Buscar contextos relevantes
+        contexts = self.document_handler.find_relevant_contexts(question)
+        
+        if not contexts:
             return {
-                "answer": "No hay documentos cargados para analizar.",
+                "answer": "No encontré información relevante en los documentos cargados para responder a tu pregunta.",
                 "score": 0.0,
                 "confidence": "N/A",
                 "sources": []
             }
-
+        
+        # Preparar el contexto para la generación
+        context_str = "\n".join([f"Contenido: {c['text']}" for c in contexts[:2]])  # Usar máximo 2 contextos
+        sources = list(set([c['source'] for c in contexts]))
+        
+        # Generar respuesta
         try:
-            # Obtener contextos relevante
-            contexts = self.document_handler.find_relevant_contexts(question)
-            if not contexts:
-                return {
-                    "answer": "No encontré información relevante en los documentos cargados.",
-                    "score": 0.0,
-                    "confidence": "N/A",
-                    "sources": []
-                }
-
-         # Procesar cada contexto para obtener respuestas
-            answers = []
-            for context in contexts:
-                try:
-                    result = self.qa_pipeline(question=question, context=context)
-                    if result['score'] > 0.01:  # Filtro mínimo de confianza
-                         answers.append({
-                            "answer": result['answer'],
-                            "score": float(result['score']),
-                            "context": context
-                        })
-                except Exception as e:
-                    print(f"Error procesando contexto: {str(e)}")
-                    continue
-
-            if not answers:
-                return {
-                    "answer": "No pude encontrar una respuesta clara en los documentos cargados.",
-                    "score": 0.0,
-                    "confidence": "N/A",
-                    "sources": []
-                }
-
-            # Seleccionar la mejor respuesta
-            best_answer = max(answers, key=lambda x: x['score'])
-
-            # Obtener fuentes/documentos de origen
-            sources = []
-            for doc in self.document_handler.documents:
-                if best_answer['context'] in doc['fragments']:
-                    sources.append(doc['file_name'])
-                    if len(sources) >= 2:  # Limitar a 2 fuentes máximo
-                        break
-
+            if self.generation_pipe is not None:
+                generated = self.generation_pipe(
+                    f"Pregunta: {question}\nContexto: {context_str}",
+                    max_length=200,
+                    do_sample=False
+                )
+                answer = generated[0]['generated_text']
+            else:
+                # Fallback: usar el fragmento más relevante
+                answer = contexts[0]['text']
+            
             return {
-                "answer": best_answer['answer'].strip(),
-                "score": best_answer['score'],
-                "confidence": self._get_confidence_level(best_answer['score']),
+                "answer": answer,
+                "score": float(contexts[0]['score']),
+                "confidence": self._get_confidence_level(contexts[0]['score']),
                 "sources": sources
             }
-
+            
         except Exception as e:
-            print(f"Error en answer_question: {str(e)}")
+            print(f"Error generating answer: {str(e)}")
+            # Fallback: respuesta genérica
             return {
-                "answer": "Ocurrió un error al procesar tu pregunta. Por favor intenta de nuevo.",
-                "score": 0.0,
-                "confidence": "N/A",
-                "sources": []
+                "answer": f"Basado en los documentos: {contexts[0]['text']}",
+                "score": contexts[0]['score'],
+                "confidence": self._get_confidence_level(contexts[0]['score']),
+                "sources": sources
             }
-
-        def _get_confidence_level(self, score: float) -> str:
-            """Devuelve un nivel de confianza legible para el usuario."""
-            if score > 0.75:
-                return "Alta confianza"
-            elif score > 0.5:
-                return "Media confianza"
-            elif score > 0.3:
-                return "Baja confianza"
-            else:
-                return "Muy baja confianza"
-
+        
 # Inicializar el motor QA
 qa_engine = QAEngine()
 
@@ -475,7 +444,10 @@ if __name__ == "__main__":
     os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
     
     # Cargar documentos al iniciar
+    print("Cargando documentos...")
     if not qa_engine.document_handler.load_documents():
         print("Advertencia: No se encontraron documentos para cargar")
+    else:
+        print(f"Documentos cargados exitosamente: {len(qa_engine.document_handler.documents)}")
     
     app.run(host=Config.HOST, port=Config.PORT, debug=True)

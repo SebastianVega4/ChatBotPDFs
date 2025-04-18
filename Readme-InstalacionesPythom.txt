@@ -1,4 +1,5 @@
 pip install transformers torch sentencepiece
+pip install flask flask-cors transformers torch pdfplumber python-docx nltk scikit-learn
 
 # Primero instala torch según tu hardware (elige una)
 # Para CPU:

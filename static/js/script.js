@@ -111,6 +111,10 @@ class ChatUI {
 
       const data = await response.json();
 
+      if (!response.ok) {
+        throw new Error(data.error || "Error al obtener respuesta");
+      }
+
       // Manejo robusto de la respuesta
       const answer = data.answer || "No se encontró respuesta";
       const score = data.score || 0;
@@ -121,7 +125,6 @@ class ChatUI {
       if (error) {
         this.showStatus(error, "error");
       }
-
       const confidenceClass = this.getConfidenceClass(confidence);
       let sourcesText = "";
 
@@ -140,13 +143,9 @@ class ChatUI {
       );
     } catch (error) {
       console.error("Error:", error);
-      this.addMessage(
-        "bot",
-        "Error al obtener respuesta del servidor",
-        "error"
-      );
+      this.addMessage("bot", `Error: ${error.message}`, "error");
+      this.showStatus(error.message, "error");
     } finally {
-      this.showStatus("", "info");
       this.sendButton.disabled = false;
       this.scrollToBottom();
     }
